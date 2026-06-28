@@ -16,6 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
     totalCourses = document.getElementById('totalCourses');
     courseTitles = document.getElementById('courseTitles');
     
+    initTheme();
     setupEventListeners();
     createNewSession();
     loadCourseStats();
@@ -33,6 +34,9 @@ function setupEventListeners() {
     // New chat button
     document.getElementById('newChatButton').addEventListener('click', createNewSession);
 
+    // Theme toggle
+    document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+
     // Suggested questions
     document.querySelectorAll('.suggested-item').forEach(button => {
         button.addEventListener('click', (e) => {
@@ -43,6 +47,41 @@ function setupEventListeners() {
     });
 }
 
+
+// Theme Management
+const THEME_STORAGE_KEY = 'theme-preference';
+const THEME_DARK = 'dark';
+const THEME_LIGHT = 'light';
+
+function initTheme() {
+    const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+    // Default to dark theme if no preference saved
+    const theme = savedTheme || THEME_DARK;
+    applyTheme(theme);
+
+    // Enable smooth transitions after initial theme is set (prevents flash on load)
+    // Use requestAnimationFrame to ensure the theme is applied before transitions start
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            document.documentElement.classList.add('theme-ready');
+        });
+    });
+}
+
+function toggleTheme() {
+    const currentTheme = document.documentElement.getAttribute('data-theme');
+    const newTheme = currentTheme === THEME_LIGHT ? THEME_DARK : THEME_LIGHT;
+    applyTheme(newTheme);
+    localStorage.setItem(THEME_STORAGE_KEY, newTheme);
+}
+
+function applyTheme(theme) {
+    if (theme === THEME_LIGHT) {
+        document.documentElement.setAttribute('data-theme', THEME_LIGHT);
+    } else {
+        document.documentElement.removeAttribute('data-theme');
+    }
+}
 
 // Chat Functions
 async function sendMessage() {
