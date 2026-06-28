@@ -18,4 +18,15 @@ dependencies = [
 dev = [
     "playwright>=1.60.0",
     "pytest>=9.1.1",
+    "httpx>=0.28.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+asyncio_mode = "auto"
+markers = [
+    "unit: Unit tests for individual components",
+    "integration: Integration tests that exercise multiple components",
+    "api: FastAPI endpoint / HTTP-level tests",
+    "slow: Tests that are slow and may be skipped in quick runs",
 ]
