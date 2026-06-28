@@ -26,6 +26,10 @@ uploads/
 *.swp
 *.swo
 
+# Frontend dependencies
+frontend/node_modules/
+frontend/package-lock.json
+
 # OS
 .DS_Store
 Thumbs.db
