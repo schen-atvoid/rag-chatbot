@@ -18,8 +18,8 @@ jobs:
       - name: DeepSeek Code Review
         uses: hustcer/deepseek-review@v1
         with:
-          chat-token: ${{ secrets.CHAT_TOKEN }}
-          model: "deepseek-chat"
+          chat-token: ${{ secrets.DEEPSEEK_API_KEY }}
+          model: "deepseek-v4-flash"
           sys-prompt: |
             You are a senior code review expert. Please review the following code changes, focusing on:
 
