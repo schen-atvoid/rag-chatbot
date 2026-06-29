@@ -1,76 +1,55 @@
 name: PR Review with DeepSeek CR
 
-# 触发时机：PR 打开、更新、重新打开
 on:
   pull_request_target:
     types:
-      - opened      # PR 打开时触发
-      - reopened    # PR 重新打开时触发
-      - synchronize # PR 有新提交时触发
+      - opened
+      - reopened
+      - synchronize
 
-# 配置权限（GITHUB_TOKEN 自动提供，无需配置 Secrets）
 permissions:
-  pull-requests: write  # 允许在 PR 中发表评论
+  pull-requests: write
 
 jobs:
   deepseek-review:
     runs-on: ubuntu-latest
     
     steps:
-      # 使用 DeepSeek CR Action 进行代码审查
       - name: DeepSeek Code Review
         uses: hustcer/deepseek-review@v1
         with:
-          # ===== 必填配置 =====
-          # 你的 DeepSeek API Token（需要在 GitHub Secrets 中配置 CHAT_TOKEN）
           chat-token: ${{ secrets.CHAT_TOKEN }}
-          
-          # ===== 可选配置（推荐设置） =====
-          # 模型选择：使用 DeepSeek V4
           model: "deepseek-chat"
-          
-          # 自定义系统提示词
           sys-prompt: |
-            你是一位资深的代码审查专家。请对以下代码变更进行全面审查，重点关注以下领域：
-            
-            ## 1. 代码质量
-            - 代码是否遵循简洁代码原则？
-            - 是否有适当的错误处理和边界情况处理？
-            - 代码可读性和可维护性如何？
-            
-            ## 2. 安全性
-            - 是否存在潜在的安全漏洞（SQL注入、XSS、命令注入等）？
-            - 输入验证是否充分？
-            - 敏感信息是否正确处理？
-            
-            ## 3. 性能
-            - 是否存在潜在的性能瓶颈？
-            - 数据库查询是否高效（注意 N+1 问题）？
-            
-            ## 4. 测试
-            - 是否有充分的单元测试覆盖？
-            - 测试代码是否清晰易维护？
-            
-            ## 5. 文档
-            - 代码是否有适当的注释和文档字符串？
-            - 新功能是否更新了 README？
-            
-            ## 输出要求：
-            - 使用清晰的 Markdown 格式
-            - 对具体问题给出代码行引用
-            - 对严重问题给出修复建议
-            - 对优秀实践给予肯定
-            - 优先报告高风险问题
-          
-          # ===== 其他可选配置 =====
-          # 如果使用其他兼容的 API 端点，可以取消注释并设置
-          # base-url: "https://api.siliconflow.cn/v1"
-          
-          # 跳过审查的关键词（在 PR 标题或正文中包含这些词时跳过）
-          # skip-keywords: "skip review, wip, draft"
-          
-          # 监听的提及字符串（在 PR 评论中提及此字符串时触发审查）
-          # watch-mention: "@github-actions"
-          
-          # 允许触发审查的关联用户类型（OWNER, MEMBER, COLLABORATOR, NONE）
-          # allowed-associations: "OWNER,MEMBER,COLLABORATOR"
+            You are a senior code review expert. Please review the following code changes, focusing on:
+
+            ## 1. Code Quality
+            - Does the code follow clean code principles?
+            - Is there proper error handling and boundary case handling?
+            - Is the code readable and maintainable?
+            - Are there code duplications or areas that can be optimized?
+
+            ## 2. Security
+            - Are there potential security vulnerabilities (SQL injection, XSS, command injection, etc.)?
+            - Is input validation sufficient?
+            - Is sensitive information properly handled?
+
+            ## 3. Performance
+            - Are there potential performance bottlenecks?
+            - Are database queries efficient (watch for N+1 problems)?
+            - Are there unnecessary resource consumptions?
+
+            ## 4. Testing
+            - Is there sufficient unit test coverage?
+            - Is the test code clear and maintainable?
+
+            ## 5. Documentation
+            - Does the code have appropriate comments and docstrings?
+            - Is README updated for new features?
+
+            ## Output Requirements:
+            - Use clear Markdown format
+            - Reference specific code lines for issues
+            - Provide fix suggestions for serious issues
+            - Acknowledge good practices
+            - Prioritize high-risk issues
