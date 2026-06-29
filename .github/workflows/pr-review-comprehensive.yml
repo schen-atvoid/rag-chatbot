@@ -1,5 +1,7 @@
 name: PR Review with DeepSeek CR
 
+# 每当 PR 被开启 / 重开 / 推新提交时，自动用 DeepSeek 做一次代码审查。
+# 在 PR 标题或正文里写 "skip cr" 或 "skip review" 可跳过本次审查。
 on:
   pull_request_target:
     types:
@@ -7,49 +9,52 @@ on:
       - reopened
       - synchronize
 
+# 该 action 需要把审查结果作为 review 评论贴回 PR，故需要此权限。
+# 注意：本 job 不 checkout 也不执行 PR 代码，因此 pull_request_target 在这里是安全的。
 permissions:
   pull-requests: write
 
 jobs:
   deepseek-review:
     runs-on: ubuntu-latest
-    
+    name: Code Review
     steps:
       - name: DeepSeek Code Review
         uses: hustcer/deepseek-review@v1
         with:
+          # secret 名要和你在 仓库 Settings → Secrets and variables → Actions 里建的完全一致
           chat-token: ${{ secrets.DEEPSEEK_API_KEY }}
-          model: "deepseek-v4-flash"
+          # review 建议用更强的模型；不确定可用模型名时，删掉这行用默认 deepseek-v4-flash
+          model: deepseek-v4-pro
+          # base-url 默认就是 https://api.deepseek.com（DeepSeek 原生 OpenAI 兼容端点）
+          # ⚠️ 不要填 .bashrc 里那个 /anthropic 端点——本 action 走 OpenAI 格式
+          temperature: 0.3
+          # 排除不需要审查的文件（默认已排除各种 lock 文件，这里可再加）
+          exclude-patterns: "pnpm-lock.yaml,package-lock.json,*.lock,*.min.js"
+          # 自定义系统提示词；写中文 → 审查结果就是中文。删掉则用官方英文默认 prompt。
           sys-prompt: |
-            You are a senior code review expert. Please review the following code changes, focusing on:
+            你是一位资深代码审查专家，请审查以下代码变更，聚焦：
 
-            ## 1. Code Quality
-            - Does the code follow clean code principles?
-            - Is there proper error handling and boundary case handling?
-            - Is the code readable and maintainable?
-            - Are there code duplications or areas that can be optimized?
+            ## 1. 代码质量
+            - 是否遵循整洁代码原则？错误处理与边界情况是否到位？
+            - 可读性与可维护性如何？是否存在重复或可优化处？
 
-            ## 2. Security
-            - Are there potential security vulnerabilities (SQL injection, XSS, command injection, etc.)?
-            - Is input validation sufficient?
-            - Is sensitive information properly handled?
+            ## 2. 安全
+            - 是否存在潜在安全漏洞（SQL 注入、XSS、命令注入等）？
+            - 输入校验是否充分？敏感信息是否妥善处理？
 
-            ## 3. Performance
-            - Are there potential performance bottlenecks?
-            - Are database queries efficient (watch for N+1 problems)?
-            - Are there unnecessary resource consumptions?
+            ## 3. 性能
+            - 是否存在性能瓶颈？数据库查询是否高效（注意 N+1）？
+            - 是否有不必要的资源消耗？
 
-            ## 4. Testing
-            - Is there sufficient unit test coverage?
-            - Is the test code clear and maintainable?
+            ## 4. 测试
+            - 单元测试覆盖是否充分？测试代码是否清晰可维护？
 
-            ## 5. Documentation
-            - Does the code have appropriate comments and docstrings?
-            - Is README updated for new features?
+            ## 5. 文档
+            - 是否有恰当的注释与 docstring？新功能是否更新了 README？
 
-            ## Output Requirements:
-            - Use clear Markdown format
-            - Reference specific code lines for issues
-            - Provide fix suggestions for serious issues
-            - Acknowledge good practices
-            - Prioritize high-risk issues
+            ## 输出要求
+            - 使用清晰的 Markdown 格式
+            - 针对问题引用具体代码行
+            - 对严重问题给出修复建议
+            - 肯定好的实践，并优先列出高风险问题
