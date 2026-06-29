@@ -1,0 +1,369 @@
+name: DeepSeek Interactive Assistant
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  deepseek-agent:
+    # 只响应包含 @claude 的触发
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ubuntu-latest
+    
+    # 配置 GitHub Token 权限（GITHUB_TOKEN 自动提供，无需配置 Secrets）
+    permissions:
+      contents: read          # 读取代码库
+      pull-requests: write    # 回复 PR 评论
+      issues: write           # 回复 Issue 评论
+    
+    steps:
+      # 步骤 1: 检出代码
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # 获取完整历史，用于 git diff
+      
+      # 步骤 2: 运行 DeepSeek Agent（使用 Python 脚本实现工具调用能力）
+      - name: Run DeepSeek Agent
+        env:
+          # GITHUB_TOKEN - GitHub 自动提供，用于回复评论
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # DEEPSEEK_API_KEY - 需要在仓库 Secrets 中手动配置
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          MODEL_NAME: "deepseek-chat"  # DeepSeek V4 的模型名
+        run: |
+          python3 << 'AGENT_SCRIPT'
+          import os
+          import json
+          import urllib.request
+          import urllib.error
+          import subprocess
+          import re
+          from pathlib import Path
+          
+          # ==================== 配置部分 ====================
+          api_key = os.environ["DEEPSEEK_API_KEY"]
+          gh_token = os.environ["GITHUB_TOKEN"]
+          model_name = os.environ.get("MODEL_NAME", "deepseek-chat")
+          repo = os.environ["GITHUB_REPOSITORY"]
+          
+          # ==================== 获取 GitHub 事件数据 ====================
+          event_path = os.environ["GITHUB_EVENT_PATH"]
+          with open(event_path, 'r') as f:
+              event = json.load(f)
+          
+          # 提取评论/Issue 内容
+          user_query = ""
+          pr_info = None
+          
+          if "comment" in event:
+              user_query = event["comment"]["body"]
+              if "pull_request" in event:
+                  pr_info = event["pull_request"]
+          elif "review" in event:
+              user_query = event["review"]["body"]
+              pr_info = event.get("pull_request")
+          elif "issue" in event:
+              issue = event["issue"]
+              user_query = issue.get("body", "") + "\n\n" + issue.get("title", "")
+              if "pull_request" in issue:
+                  pr_info = issue["pull_request"]
+          
+          # 清理 @claude 提及
+          user_query = re.sub(r'@claude', '', user_query, flags=re.IGNORECASE).strip()
+          
+          # ==================== 工具函数集 ====================
+          
+          def run_command(cmd, timeout=30):
+              """安全地执行 shell 命令"""
+              try:
+                  result = subprocess.run(
+                      cmd,
+                      shell=True,
+                      capture_output=True,
+                      text=True,
+                      timeout=timeout,
+                      cwd=os.getcwd()
+                  )
+                  return {
+                      "success": result.returncode == 0,
+                      "stdout": result.stdout,
+                      "stderr": result.stderr,
+                      "returncode": result.returncode
+                  }
+              except subprocess.TimeoutExpired:
+                  return {
+                      "success": False,
+                      "stdout": "",
+                      "stderr": f"Command timed out after {timeout}s",
+                      "returncode": -1
+                  }
+              except Exception as e:
+                  return {
+                      "success": False,
+                      "stdout": "",
+                      "stderr": str(e),
+                      "returncode": -1
+                  }
+          
+          def read_file(file_path):
+              """读取文件内容"""
+              try:
+                  full_path = Path(file_path)
+                  if not full_path.exists():
+                      return None, f"File not found: {file_path}"
+                  with open(full_path, 'r', encoding='utf-8') as f:
+                      content = f.read()
+                  if len(content) > 50000:
+                      content = content[:50000] + "\n... (文件过大，已截断) ..."
+                  return content, None
+              except Exception as e:
+                  return None, str(e)
+          
+          def search_files(pattern, max_results=20):
+              """在仓库中搜索文件"""
+              try:
+                  result = run_command(f"find . -name '{pattern}' | head -{max_results}", timeout=30)
+                  if result["success"]:
+                      files = result["stdout"].strip().split('\n')
+                      files = [f for f in files if f and not f.startswith('.git')]
+                      return files
+                  return []
+              except:
+                  return []
+          
+          def list_directory(path="."):
+              """列出目录内容"""
+              try:
+                  full_path = Path(path)
+                  if not full_path.exists():
+                      return f"Directory not found: {path}"
+                  result = run_command(f"ls -la {path}", timeout=10)
+                  if result["success"]:
+                      return result["stdout"]
+                  return result["stderr"]
+              except Exception as e:
+                  return str(e)
+          
+          def get_pr_diff(pr):
+              """获取 PR 的代码差异"""
+              if not pr:
+                  return "No PR context available"
+              base_sha = pr["base"]["sha"]
+              head_sha = pr["head"]["sha"]
+              result = run_command(f"git diff {base_sha}...{head_sha}", timeout=60)
+              if result["success"]:
+                  diff = result["stdout"]
+                  if len(diff) > 100000:
+                      diff = diff[:100000] + "\n... (diff 过大，已截断) ..."
+                  return diff
+              else:
+                  return f"Failed to get diff: {result['stderr']}"
+          
+          # ==================== 系统提示词（Agent 工具说明） ====================
+          system_prompt = """你是一个强大的代码助手 Agent，具备以下工具能力：
+
+          ## 可用工具：
+
+          1. **read_file(file_path)** - 读取文件内容
+             示例："请读取 src/main.py 的内容"
+
+          2. **run_command(command)** - 执行安全 shell 命令
+             可执行：git, ls, find, cat, pytest, npm test 等
+             示例："运行项目测试", "查看最近的提交历史"
+
+          3. **search_files(pattern)** - 搜索文件
+             示例："查找所有的测试文件"
+
+          4. **list_directory(path)** - 列出目录内容
+             示例："列出 src 目录的结构"
+
+          5. **get_pr_diff()** - 获取当前 PR 的代码变更（仅在 PR 中可用）
+
+          ## 工作流程：
+          1. 理解用户需求
+          2. 使用合适的工具获取信息
+          3. 分析问题并给出解决方案
+          4. 提供修改建议（使用完整代码块）
+          5. 给出执行建议
+
+          ## 输出格式：
+          - 工具调用格式：执行: 工具名(参数)
+          - 工具结果用代码块展示
+          - 修改建议用完整代码块并指明文件路径
+
+          ## 安全约束：
+          - 只执行安全的只读命令
+          - 对于写入操作，提供内容但要求用户手动执行
+          - 遇到错误清晰说明并尝试替代方案
+          """
+          
+          # ==================== DeepSeek API 调用 ====================
+          def call_deepseek(messages):
+              """调用 DeepSeek API"""
+              url = "https://api.deepseek.com/chat/completions"
+              data = {
+                  "model": model_name,
+                  "messages": messages,
+                  "stream": False,
+                  "temperature": 0.7
+              }
+              
+              req = urllib.request.Request(
+                  url,
+                  data=json.dumps(data).encode('utf-8'),
+                  headers={
+                      'Content-Type': 'application/json',
+                      'Authorization': f'Bearer {api_key}'
+                  }
+              )
+              
+              try:
+                  with urllib.request.urlopen(req, timeout=120) as response:
+                      result = json.loads(response.read().decode('utf-8'))
+                      return result["choices"][0]["message"]["content"]
+              except urllib.error.HTTPError as e:
+                  return f"❌ API 调用失败 ({e.code}): {e.read().decode()}"
+              except Exception as e:
+                  return f"❌ 发生错误: {str(e)}"
+          
+          # ==================== 工具执行引擎 ====================
+          def execute_tool_calls(model_response):
+              """解析并执行模型请求的工具调用"""
+              tool_results = []
+              
+              # 1. 检测 read_file 调用
+              read_pattern = r'执行:\s*read_file\(["\']([^"\']+)["\']\)'
+              for match in re.finditer(read_pattern, model_response, re.IGNORECASE):
+                  file_path = match.group(1)
+                  content, error = read_file(file_path)
+                  if error:
+                      tool_results.append(f"📄 read_file('{file_path}') → ❌ {error}")
+                  else:
+                      tool_results.append(f"📄 read_file('{file_path}') → ✅ 成功\n```{content}\n```")
+              
+              # 2. 检测 run_command 调用
+              command_pattern = r'执行:\s*run_command\(["\']([^"\']+)["\']\)|执行命令:\s*["\']([^"\']+)["\']|运行[:\s]+["\']([^"\']+)["\']'
+              for match in re.finditer(command_pattern, model_response, re.IGNORECASE):
+                  cmd = match.group(1) or match.group(2) or match.group(3)
+                  if cmd:
+                      safe_commands = ['git', 'ls', 'find', 'cat', 'head', 'tail', 'grep', 'pytest', 'npm', 'python', 'node']
+                      cmd_start = cmd.strip().split()[0]
+                      
+                      if any(cmd_start.startswith(safe) for safe in safe_commands):
+                          result = run_command(cmd, timeout=30)
+                          if result["success"]:
+                              output = result["stdout"]
+                              if not output:
+                                  output = "(命令执行成功，无输出)"
+                              tool_results.append(f"💻 run_command('{cmd}') → ✅\n```\n{output}\n```")
+                          else:
+                              tool_results.append(f"💻 run_command('{cmd}') → ❌\n```\n{result['stderr']}\n```")
+                      else:
+                          tool_results.append(f"💻 run_command('{cmd}') → ⚠️ 命令不被允许，出于安全考虑跳过")
+              
+              # 3. 检测 search_files 调用
+              search_pattern = r'执行:\s*search_files\(["\']([^"\']+)["\']\)|搜索文件[:\s]+["\']([^"\']+)["\']'
+              for match in re.finditer(search_pattern, model_response, re.IGNORECASE):
+                  pattern = match.group(1) or match.group(2)
+                  if pattern:
+                      files = search_files(pattern)
+                      if files:
+                          tool_results.append(f"🔍 search_files('{pattern}') → ✅ 找到 {len(files)} 个文件:\n```\n" + "\n".join(files) + "\n```")
+                      else:
+                          tool_results.append(f"🔍 search_files('{pattern}') → ❌ 未找到文件")
+              
+              # 4. 检测 list_directory 调用
+              dir_pattern = r'执行:\s*list_directory\(["\']?([^"\']+)["\']?\)|列出目录[:\s]+["\']?([^"\']+)["\']?'
+              for match in re.finditer(dir_pattern, model_response, re.IGNORECASE):
+                  path = match.group(1) or match.group(2) or "."
+                  result = list_directory(path)
+                  tool_results.append(f"📁 list_directory('{path}')\n```\n{result}\n```")
+              
+              return tool_results
+          
+          # ==================== 多轮对话循环 ====================
+          max_rounds = 3
+          messages = [
+              {"role": "system", "content": system_prompt},
+              {"role": "user", "content": user_content}
+          ]
+          
+          # 构建初始用户消息
+          user_content = f"用户请求: {user_query}\n"
+          if pr_info:
+              diff = get_pr_diff(pr_info)
+              user_content += f"\n当前 PR 的代码变更:\n```\n{diff}\n```\n"
+          messages[1]["content"] = user_content
+          
+          final_response = ""
+          conversation_history = []
+          
+          for round_num in range(max_rounds):
+              model_response = call_deepseek(messages)
+              conversation_history.append({"role": "assistant", "content": model_response})
+              
+              if round_num == 0:
+                  final_response = model_response
+              
+              tool_results = execute_tool_calls(model_response)
+              
+              if not tool_results:
+                  break
+              
+              tool_summary = "\n\n".join(tool_results)
+              messages.append({"role": "assistant", "content": model_response})
+              messages.append({"role": "user", "content": f"工具执行结果:\n{tool_summary}\n\n请基于这些结果继续完成任务。"})
+              
+              final_response = model_response + f"\n\n---\n\n### 🔧 工具执行结果:\n{tool_summary}"
+          
+          # ==================== 回复到 GitHub ====================
+          def post_comment(body):
+              """发布评论到 GitHub"""
+              if "comment" in event and "url" in event["comment"]:
+                  issue_url = event["issue"]["url"]
+                  comments_url = f"{issue_url}/comments"
+              elif "issue" in event and "comments_url" in event["issue"]:
+                  comments_url = event["issue"]["comments_url"]
+              elif "pull_request" in event and "comments_url" in event["pull_request"]:
+                  comments_url = event["pull_request"]["comments_url"]
+              else:
+                  print("❌ 无法确定评论 URL")
+                  return
+              
+              comment_body = f"""## 🤖 DeepSeek V4 助手
+          
+          {final_response}
+          
+          ---
+          *由 DeepSeek V4 Flash 模型驱动 | 基于 GitHub Actions 自动运行*
+          """
+              
+              req = urllib.request.Request(
+                  comments_url,
+                  data=json.dumps({"body": comment_body}).encode('utf-8'),
+                  headers={
+                      'Content-Type': 'application/json',
+                      'Authorization': f'token {gh_token}',
+                      'Accept': 'application/vnd.github.v3+json'
+                  }
+              )
+              
+              try:
+                  with urllib.request.urlopen(req) as resp:
+                      print("✅ 评论发布成功！")
+              except Exception as e:
+                  print(f"❌ 评论发布失败: {str(e)}")
+          
+          post_comment(final_response)
+          AGENT_SCRIPT
