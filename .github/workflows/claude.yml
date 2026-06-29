@@ -58,15 +58,19 @@ jobs:
               event = json.load(f)
 
           # ==================== 提取用户输入 + 定位评论回贴地址 ====================
-          user_query   = ""
-          comments_url = None
-          pr_number    = None
+          user_query    = ""    # 触发评论里写的话
+          issue_context = ""    # issue 本身的标题 + 正文（视频里的关键：评论即可开干）
+          comments_url  = None
+          pr_number     = None
 
           if event_nm == "issue_comment":
               user_query   = event.get("comment", {}).get("body", "")
-              comments_url = event.get("issue", {}).get("comments_url")
-              if "pull_request" in event.get("issue", {}):
-                  pr_number = event["issue"]["number"]   # PR 复用 issue 编号
+              issue        = event.get("issue", {})
+              # 把 issue 的标题和正文也带上，这样在一个写好需求的 issue 下评论 @deepseek 即可直接开始
+              issue_context = f"Issue 标题：{issue.get('title','')}\n\nIssue 正文：\n{issue.get('body','') or '(无正文)'}"
+              comments_url = issue.get("comments_url")
+              if "pull_request" in issue:
+                  pr_number = issue.get("number")   # PR 复用 issue 编号
           elif event_nm == "pull_request_review_comment":
               user_query = event.get("comment", {}).get("body", "")
               pr_number  = event.get("pull_request", {}).get("number")
@@ -83,7 +87,7 @@ jobs:
                   comments_url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
 
           user_query = re.sub(r'@deepseek', '', user_query, flags=re.IGNORECASE).strip()
-          if not user_query:
+          if not user_query and not issue_context:
               print("用户查询为空，跳过")
               raise SystemExit(0)
           print(f"查询: {user_query[:120]}")
@@ -131,7 +135,10 @@ jobs:
               except Exception as e:
                   return f"发生错误: {e}"
 
-          user_content = f"用户请求：{user_query}\n"
+          user_content = ""
+          if issue_context:
+              user_content += f"{issue_context}\n\n"
+          user_content += f"用户在评论中的请求：{user_query or '（评论无额外内容，请基于上面的 Issue 标题与正文来处理）'}\n"
           if pr_diff:
               user_content += f"\n当前 PR 代码变更：\n```diff\n{pr_diff}\n```\n"
 
