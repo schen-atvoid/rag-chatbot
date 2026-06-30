@@ -109,17 +109,16 @@ jobs:
               except Exception as e:
                   return f"(获取 diff 异常: {e})"
 
-          pr_diff = get_pr_diff(pr_number)
-
           # ==================== 调 DeepSeek（OpenAI 兼容端点）====================
           SYSTEM_PROMPT = (
-              "你是一个资深代码助手。基于用户的问题与（如有）PR 代码变更进行分析、"
-              "解答与给出建议。这是只读环境：你不能执行命令，如需改动请直接给出"
-              "完整代码块并标明文件路径，由用户手动应用。请用清晰的 Markdown 输出。"
+              "你是一个资深代码助手。你会拿到本仓库的真实文件内容、issue 需求、以及（如有）PR 变更。"
+              "请【基于这些真实代码】分析并给出修改方案，不要假设技术栈或泛泛而谈。"
+              "这是只读环境：你不能执行命令，如需改动请给出完整代码块并标明确切文件路径与改动位置，由用户手动应用。"
+              "请用清晰的 Markdown 输出。"
           )
 
-          def call_deepseek(messages):
-              data = {"model": model, "messages": messages, "stream": False, "temperature": 0.3}
+          def call_deepseek(messages, temperature=0.3):
+              data = {"model": model, "messages": messages, "stream": False, "temperature": temperature}
               req = urllib.request.Request(
                   "https://api.deepseek.com/chat/completions",
                   data=json.dumps(data).encode("utf-8"),
@@ -135,12 +134,83 @@ jobs:
               except Exception as e:
                   return f"发生错误: {e}"
 
+          # ==================== 读取仓库：文件树 + 让模型挑文件 + 读取内容 ====================
+          def get_file_tree():
+              # 用 git ls-files，只列被跟踪的文件（天然排除 node_modules / .git 等）
+              try:
+                  r = subprocess.run(["git", "ls-files"], capture_output=True, text=True, timeout=30)
+                  files = [f for f in r.stdout.splitlines() if f.strip()]
+              except Exception:
+                  files = []
+              # 过滤明显的二进制/锁文件/体积大的资源
+              skip_ext = (".png",".jpg",".jpeg",".gif",".svg",".ico",".pdf",".lock",
+                          ".woff",".woff2",".ttf",".map",".min.js",".min.css")
+              files = [f for f in files if not f.lower().endswith(skip_ext)]
+              return files[:400]   # 文件树最多列 400 个，防止过长
+
+          def pick_files(file_list, context_text, max_pick=8):
+              """第一遍：让模型从文件树里挑出最相关的若干文件，返回路径列表。"""
+              prompt = (
+                  "下面是本仓库的文件清单。根据 issue 需求，挑出最多 "
+                  f"{max_pick} 个你需要查看其内容才能给出准确修改方案的文件。"
+                  "只返回一个 JSON 数组（形如 [\"path/a\", \"path/b\"]），不要任何多余文字。\n\n"
+                  f"== 需求 ==\n{context_text}\n\n== 文件清单 ==\n" + "\n".join(file_list)
+              )
+              raw = call_deepseek([{"role": "user", "content": prompt}], temperature=0.0)
+              # 容错解析：去掉可能的 ``` 包裹，提取第一个 JSON 数组
+              m = re.search(r'\[.*\]', raw, re.DOTALL)
+              if not m:
+                  return []
+              try:
+                  picked = json.loads(m.group(0))
+                  return [p for p in picked if isinstance(p, str) and p in file_list][:max_pick]
+              except Exception:
+                  return []
+
+          def read_files(paths, per_file_cap=12000, total_cap=80000):
+              """读取选中文件内容，带单文件与总量上限，避免 token 爆掉。"""
+              chunks, total = [], 0
+              for p in paths:
+                  try:
+                      with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                          content = fh.read(per_file_cap + 1)
+                      if len(content) > per_file_cap:
+                          content = content[:per_file_cap] + "\n...(文件过大，已截断)..."
+                  except Exception as e:
+                      content = f"(读取失败: {e})"
+                  block = f"\n===== 文件: {p} =====\n{content}\n"
+                  if total + len(block) > total_cap:
+                      chunks.append("\n...(已达内容上限，省略其余文件)...")
+                      break
+                  chunks.append(block); total += len(block)
+              return "".join(chunks)
+
+          pr_diff = get_pr_diff(pr_number)
+
+          # 组合“需求文本”（issue 标题/正文 + 评论 + PR diff），供选文件用
+          need_text = ""
+          if issue_context:
+              need_text += issue_context + "\n\n"
+          need_text += f"用户评论：{user_query or '（无额外内容，按 issue 需求处理）'}\n"
+          if pr_diff:
+              need_text += f"\nPR 变更：\n{pr_diff[:4000]}\n"
+
+          tree = get_file_tree()
+          picked = pick_files(tree, need_text) if tree else []
+          print(f"模型选定文件: {picked}")
+          code_context = read_files(picked) if picked else ""
+
+          # ==================== 第二遍：带着真实代码给出答案 ====================
           user_content = ""
           if issue_context:
               user_content += f"{issue_context}\n\n"
-          user_content += f"用户在评论中的请求：{user_query or '（评论无额外内容，请基于上面的 Issue 标题与正文来处理）'}\n"
+          user_content += f"用户在评论中的请求：{user_query or '（评论无额外内容，请基于上面的 Issue 与下方代码来处理）'}\n"
           if pr_diff:
               user_content += f"\n当前 PR 代码变更：\n```diff\n{pr_diff}\n```\n"
+          if code_context:
+              user_content += f"\n以下是仓库中相关文件的真实内容，请基于它们给出具体修改：\n{code_context}\n"
+          else:
+              user_content += "\n（注：未能定位到相关文件，请说明你需要查看哪些文件，并给出基于常见结构的建议。）\n"
 
           answer = call_deepseek([
               {"role": "system", "content": SYSTEM_PROMPT},
